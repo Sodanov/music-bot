@@ -18,6 +18,9 @@ import yt_dlp
 
 logger = logging.getLogger(__name__)
 
+ydl_logger = logging.getLogger("yt-dlp")
+ydl_logger.setLevel(logging.DEBUG)
+
 # Лимит Telegram для ботов на отправку файла - 50 МБ, оставляем запас
 MAX_FILE_SIZE = 49 * 1024 * 1024
 

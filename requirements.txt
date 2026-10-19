@@ -6,4 +6,3 @@ python-dotenv>=1.0
 truststore>=0.9
 flask
 beautifulsoup4
-yt-dlp[default]
