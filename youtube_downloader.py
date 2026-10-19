@@ -35,7 +35,14 @@ class YouTubeDownloader:
 
     def __init__(self):
         self.proxy = os.getenv('PROXY') or None
-        self.cookies_file = os.getenv('COOKIES_FILE') or None
+        self.cookies_file = None
+        cookies_src = os.getenv('COOKIES_FILE') or None
+        if cookies_src and os.path.exists(cookies_src):
+            cookies_dst = os.path.join(tempfile.gettempdir(), 'yt_cookies.txt')
+            shutil.copyfile(cookies_src, cookies_dst)
+            self.cookies_file = cookies_dst
+        elif cookies_src:
+            logger.warning(f"COOKIES_FILE указан, но файл не найден: {cookies_src}")
         self.has_ffmpeg = shutil.which('ffmpeg') is not None
 
         if not self.has_ffmpeg:
