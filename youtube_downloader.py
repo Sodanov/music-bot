@@ -183,9 +183,15 @@ class YouTubeDownloader:
                     logger.info(
                         f"Попытка {attempt}/{len(PLAYER_CLIENTS)}: клиент={clients or 'по умолчанию'}"
                     )
-                    with yt_dlp.YoutubeDL(self._download_opts(tmpdir, clients)) as ydl:
+                    opts = self._download_opts(tmpdir, clients)
+                    opts.update({
+                        "logger": ydl_logger,
+                        "verbose": True,
+                        "quiet": False,
+                        "no_warnings": False,
+                    })
+                    with yt_dlp.YoutubeDL(opts) as ydl:
                         ydl.extract_info(url, download=True)
-
                     files = [
                         f for f in glob.glob(os.path.join(tmpdir, '*'))
                         if not f.endswith(('.part', '.ytdl'))
