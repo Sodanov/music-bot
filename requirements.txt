@@ -7,3 +7,4 @@ truststore>=0.9
 flask
 beautifulsoup4
 yt-dlp[default]
+deno
