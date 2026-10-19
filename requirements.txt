@@ -4,3 +4,6 @@ aiosqlite>=0.20
 cachetools>=5.3
 python-dotenv>=1.0
 truststore>=0.9
+flask
+beautifulsoup4
+yt-dlp

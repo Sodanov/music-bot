@@ -23,6 +23,20 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
+from flask import Flask
+from threading import Thread
+import os
+
+web = Flask(__name__)
+
+@web.route("/")
+def home():
+    return "Bot is alive"
+
+def run_web():
+    web.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
+Thread(target=run_web, daemon=True).start()
 from cachetools import TTLCache
 
 import db
