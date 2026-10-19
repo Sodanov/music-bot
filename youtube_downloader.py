@@ -17,6 +17,9 @@ from typing import Dict, List, Optional
 import yt_dlp
 
 logger = logging.getLogger(__name__)
+logger.info("yt-dlp version: %s", yt_dlp.version.__version__)
+
+logger = logging.getLogger(__name__)
 
 # Лимит Telegram для ботов на отправку файла - 50 МБ, оставляем запас
 MAX_FILE_SIZE = 49 * 1024 * 1024
