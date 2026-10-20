@@ -1,7 +1,7 @@
 import truststore
 
 truststore.inject_into_ssl()  # доверяем системным сертификатам macOS/Windows
-
+import soundcloud_search
 import asyncio
 import html
 import logging
@@ -88,8 +88,9 @@ def fmt_duration(sec: int) -> str:
 
 
 def track_label(t, limit: int = 60) -> str:
+    src = getattr(t, "source",None)
     """Текст кнопки: «2:00 | название — исполнитель» (у треков с YouTube впереди 📺)."""
-    mark = "📺 " if getattr(t, "source", None) == "youtube" else ""
+    mark = "📺 " if src == "youtube" else "☁️ " if src == "soundcloud" else ""
     prefix = f"{fmt_duration(t.duration)} | " if t.duration else ""
     text = f"{mark}{prefix}{t.title} — {t.artist}".strip(" —")
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
@@ -152,9 +153,10 @@ async def do_search(message: Message, query: str, session: aiohttp.ClientSession
     await db.log_event(uid, "search", query=q)
 
     # Каталоги и YouTube ищем одновременно; сбой одного источника не ломает другой
-    catalog, youtube = await asyncio.gather(
+    catalog, youtube, soundcloud = await asyncio.gather(
         providers.search_all(session, q),
         yt.search(q, limit=YOUTUBE_FETCH),
+        soundcloud_search.search(q,limit=20),
         return_exceptions=True,
     )
 
@@ -162,6 +164,13 @@ async def do_search(message: Message, query: str, session: aiohttp.ClientSession
     if isinstance(catalog, Exception):
         log.warning("Ошибка поиска в каталогах: %s", catalog)
     else:
+        sc_tracks = [
+            YtTrack(title=i["title"], artist=i["artist"], duration=i["duration_sec"],
+                    url=i["url"], source="soundcloud")
+            for i in soundcloud
+        ]
+        sc_tracks = [t for t in sc_tracks if 60 <= t.duration <= MAX_DURATION_SEC]
+        tracks.extend(sc_tracks[:10])
         # у каталожных треков длительность может быть неизвестна (0) — такие оставляем
         tracks.extend(t for t in catalog if not t.duration or t.duration <= MAX_DURATION_SEC)
 

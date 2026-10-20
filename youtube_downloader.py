@@ -103,55 +103,32 @@ class YouTubeDownloader:
 
     # ------------------------------------------------------------------ поиск
 
-    async def search(self, query: str, limit: int = 10) -> List[Dict[str, str]]:
-        """
-        Поиск музыки на YouTube.
-
-        Returns:
-            Список словарей: title, artist, duration, url, full_name
-        """
+    async def search_soundcloud(self, query: str, limit: int = 10) -> List[Dict[str, str]]:
+        """Поиск на SoundCloud. Без прокси и без YouTube-cookies."""
         try:
-            search_query = f"ytsearch{limit}:{query} audio"
-            logger.info(f"Выполняем поиск: {search_query}")
-
             loop = asyncio.get_running_loop()
-            results = await loop.run_in_executor(None, self._search_sync, search_query)
-
-            if not results or not results.get('entries'):
-                logger.warning(f"YouTube не вернул результаты для запроса: {query}")
-                return []
-
+            results = await loop.run_in_executor(None, self._search_sc_sync, f"scsearch{limit}:{query}")
             tracks = []
-            for entry in results['entries']:
-                if not entry:
+            for entry in (results or {}).get('entries', []):
+                if not entry or not entry.get('url'):
                     continue
-
-                video_id = entry.get('id')
-                title = entry.get('title') or 'Неизвестно'
-                uploader = entry.get('uploader') or entry.get('channel') or 'Неизвестный исполнитель'
-                url = entry.get('url') or (f"https://www.youtube.com/watch?v={video_id}" if video_id else None)
-                if not url:
-                    continue
-
                 tracks.append({
-                    'title': title,
-                    'artist': uploader,
-                    'duration': self._format_duration(entry.get('duration')),
+                    'title': entry.get('title') or 'Неизвестно',
+                    'artist': entry.get('uploader') or entry.get('channel') or 'Неизвестный исполнитель',
                     'duration_sec': int(entry.get('duration') or 0),
-                    'url': url,
-                    'full_name': f"{uploader} - {title}",
+                    'url': entry['url'],
                 })
-
-            logger.info(f"Поиск вернул {len(tracks)} треков для запроса: {query}")
+            logger.info(f"SoundCloud вернул {len(tracks)} треков для запроса: {query}")
             return tracks
-
         except Exception as e:
-            logger.error(f"Ошибка поиска: {e}", exc_info=True)
+            logger.error(f"Ошибка поиска на SoundCloud: {e}", exc_info=True)
             return []
 
-    def _search_sync(self, search_query: str) -> dict:
-        with yt_dlp.YoutubeDL(self._search_opts()) as ydl:
+    def _search_sc_sync(self, search_query: str) -> dict:
+        opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True, 'socket_timeout': 30}
+        with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(search_query, download=False)
+        
 
     # ------------------------------------------------------------- скачивание
 
@@ -182,20 +159,24 @@ class YouTubeDownloader:
 
     def _download_sync(self, url: str) -> Optional[bytes]:
         """Скачивание во временную папку с повторами через разные клиенты YouTube."""
-        for attempt, clients in enumerate(PLAYER_CLIENTS, start=1):
+        def _download_sync(self, url: str) -> Optional[bytes]:
+            """Скачивание во временную папку с повторами через разные клиенты YouTube."""
+        is_yt = 'youtube.com' in url or 'youtu.be' in url
+        clients_list = PLAYER_CLIENTS if is_yt else [None]
+        for attempt, clients in enumerate(clients_list, start=1):
             # Отдельная временная папка на каждую попытку и каждого пользователя:
             # одновременные загрузки не мешают друг другу, мусор удаляется сам
             with tempfile.TemporaryDirectory(prefix='ytdl_') as tmpdir:
                 try:
                     logger.info(
-                        f"Попытка {attempt}/{len(PLAYER_CLIENTS)}: клиент={clients or 'по умолчанию'}"
+                        f"Попытка {attempt}/{len(clients_list)}: клиент={clients or 'по умолчанию'}"
                     )
                     opts = self._download_opts(tmpdir, clients)
+                    if not is_yt:
+                        opts.pop('proxy', None)       # платный прокси не тратим на SoundCloud
+                        opts.pop('cookiefile', None)  # YouTube-cookies здесь не нужны
                     opts.update({
                         "logger": ydl_logger,
-                        "verbose": True,
-                        "quiet": False,
-                        "no_warnings": False,
                     })
                     with yt_dlp.YoutubeDL(opts) as ydl:
                         ydl.extract_info(url, download=True)
@@ -223,7 +204,7 @@ class YouTubeDownloader:
                             "Помогает COOKIES_FILE и/или прокси с другим IP."
                         )
 
-            if attempt < len(PLAYER_CLIENTS):
+            if attempt < len(clients_list):
                 time.sleep(1 + attempt)
 
         logger.error("Все попытки скачивания исчерпаны")
