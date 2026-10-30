@@ -6,7 +6,6 @@ import asyncio
 import html
 import logging
 import secrets
-from dataclasses import dataclass
 
 import aiohttp
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
@@ -48,14 +47,8 @@ from youtube_downloader import YouTubeDownloader
 log = logging.getLogger(__name__)
 router = Router()
 
-# Сколько треков с YouTube добавлять к результатам поиска (после фильтра по длине)
-YOUTUBE_RESULTS = 10
-# Сколько результатов запрашивать у YouTube, чтобы после фильтра осталось достаточно
-YOUTUBE_FETCH = 30
-# Треки длиннее этого значения (в секундах) не показываем вообще
+# Максимальная длительность трека — 5 минут
 MAX_DURATION_SEC = 5 * 60
-# Сколько скачиваний с YouTube может идти одновременно
-YOUTUBE_PARALLEL = 2
 
 # token -> (запрос, список треков); callback_data ограничена 64 байтами,
 # поэтому результаты держим в памяти, а в кнопках — короткий токен
@@ -73,27 +66,17 @@ class StatsMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
-@dataclass
-class YtTrack:
-    """Трек с YouTube. Поля совпадают с теми, что использует бот у providers.Track."""
-    title: str
-    artist: str
-    duration: int  # секунды
-    url: str
-    source: str = "youtube"
-
-
 def fmt_duration(sec: int) -> str:
     return f"{sec // 60}:{sec % 60:02d}" if sec else ""
 
 
 def track_label(t, limit: int = 60) -> str:
-    src = getattr(t, "source",None)
-    """Текст кнопки: «2:00 | название — исполнитель» (у треков с YouTube впереди 📺)."""
-    mark = "📺 " if src == "youtube" else "☁️ " if src == "soundcloud" else ""
+    """Текст кнопки: длительность, название и исполнитель."""
+    src = getattr(t, "source", None)
+    mark = "☁️ " if src == "soundcloud" else ""
     prefix = f"{fmt_duration(t.duration)} | " if t.duration else ""
     text = f"{mark}{prefix}{t.title} — {t.artist}".strip(" —")
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
 
 async def send_ad(message: Message):
@@ -136,69 +119,79 @@ async def render(token: str, page: int):
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def do_search(message: Message, query: str, session: aiohttp.ClientSession, yt: YouTubeDownloader):
+async def do_search(
+    message: Message,
+    query: str,
+    session: aiohttp.ClientSession,
+):
     uid = message.from_user.id
     if uid in cooldown:
         return await message.reply("Не так быстро 🙂")
 
     query = query.strip()
     if len(query) < 2:
-        return await message.reply("Напишите название трека, например: <code>Imagine Dragons Believer</code>")
+        return await message.reply(
+            "Напишите название трека, например: "
+            "<code>Imagine Dragons Believer</code>"
+        )
 
-    # кулдаун включаем только когда запрос принят, чтобы короткий ввод его не сжигал
+    # Кулдаун включаем только когда запрос принят.
     cooldown[uid] = True
 
     status = await message.reply("🔎 Ищу…")
     q = query[:100]
     await db.log_event(uid, "search", query=q)
 
-    # Каталоги и YouTube ищем одновременно; сбой одного источника не ломает другой
-    catalog, youtube, soundcloud = await asyncio.gather(
+    # SoundCloud и остальные каталоги ищем одновременно.
+    catalog, soundcloud = await asyncio.gather(
         providers.search_all(session, q),
-        yt.search(q, limit=YOUTUBE_FETCH),
-        soundcloud_search.search(q,limit=20),
+        soundcloud_search.search(q, limit=20),
         return_exceptions=True,
     )
 
     tracks = []
+
     if isinstance(catalog, Exception):
         log.warning("Ошибка поиска в каталогах: %s", catalog)
     else:
-        sc_tracks = [
-            YtTrack(title=i["title"], artist=i["artist"], duration=i["duration_sec"],
-                    url=i["url"], source="soundcloud")
-            for i in soundcloud
-        ]
-        sc_tracks = [t for t in sc_tracks if 60 <= t.duration <= MAX_DURATION_SEC]
-        tracks.extend(sc_tracks[:10])
-        # у каталожных треков длительность может быть неизвестна (0) — такие оставляем
-        tracks.extend(t for t in catalog if not t.duration or t.duration <= MAX_DURATION_SEC)
+        tracks.extend(
+            t for t in catalog
+            if not t.duration or t.duration <= MAX_DURATION_SEC
+        )
 
-    if isinstance(youtube, Exception):
-        log.warning("Ошибка поиска на YouTube: %s", youtube)
+    if isinstance(soundcloud, Exception):
+        log.warning("Ошибка поиска в SoundCloud: %s", soundcloud)
     else:
-        yt_tracks = [
-            YtTrack(
+        from types import SimpleNamespace
+
+        sc_tracks = [
+            SimpleNamespace(
                 title=item["title"],
                 artist=item["artist"],
-                duration=item.get("duration_sec", 0),
+                duration=item["duration_sec"],
                 url=item["url"],
+                source="soundcloud",
             )
-            for item in youtube
+            for item in soundcloud
         ]
-        # убираем слишком длинные и треки без длительности (обычно это трансляции)
-        yt_tracks = [t for t in yt_tracks if 0 < t.duration <= MAX_DURATION_SEC]
-        tracks.extend(yt_tracks[:YOUTUBE_RESULTS])
+        sc_tracks = [
+            t for t in sc_tracks
+            if 60 <= t.duration <= MAX_DURATION_SEC
+        ]
+        # Сначала показываем до 10 результатов SoundCloud.
+        tracks = sc_tracks[:10] + tracks
 
     if not tracks:
-        return await status.edit_text("Ничего не нашёл 😔 Попробуйте другой запрос.")
+        return await status.edit_text(
+            "Ничего не нашёл 😔 Попробуйте другой запрос."
+        )
 
     token = secrets.token_urlsafe(5)
     results_cache[token] = (query, tracks)
     text, markup = await render(token, 0)
     await status.edit_text(text, reply_markup=markup)
 
-    # реклама — отдельным сообщением после выдачи (один раз на поиск, не при листании)
+    # Реклама отправляется один раз после выдачи.
     await send_ad(message)
 
 
@@ -210,20 +203,20 @@ async def start(m: Message):
         "🎵 <b>Музыкальный бот</b>\n\n"
         "В личных сообщениях просто напишите название трека или исполнителя.\n"
         "В группах используйте команду: <code>/music название</code>\n\n"
-        "Ищу в каталогах свободной музыки. YouTube(📺) временно не работает. SoundCloud(☁️) работает исправно."
+        "Ищу музыку в SoundCloud и других доступных каталогах."
     )
 
 
 @router.message(Command("music", "search", "m"))
-async def cmd_music(m: Message, command: CommandObject, session: aiohttp.ClientSession, yt: YouTubeDownloader):
+async def cmd_music(m: Message, command: CommandObject, session: aiohttp.ClientSession):
     if not command.args:
         return await m.reply("Использование: <code>/music название трека</code>")
-    await do_search(m, command.args, session, yt)
+    await do_search(m, command.args, session)
 
 
 @router.message(F.chat.type == "private", F.text, ~F.text.startswith("/"), StateFilter(None))
-async def private_text(m: Message, session: aiohttp.ClientSession, yt: YouTubeDownloader):
-    await do_search(m, m.text, session, yt)
+async def private_text(m: Message, session: aiohttp.ClientSession):
+    await do_search(m, m.text, session)
 
 
 # ---------- кнопки ----------
@@ -251,8 +244,6 @@ async def on_track(
     cb: CallbackQuery,
     bot: Bot,
     session: aiohttp.ClientSession,
-    yt: YouTubeDownloader,
-    yt_slots: asyncio.Semaphore,
 ):
     _, token, idx = cb.data.split(":")
     entry = results_cache.get(token)
@@ -267,23 +258,23 @@ async def on_track(
     if track.duration:
         kwargs["duration"] = track.duration
 
-    # --- трек с YouTube: скачиваем сами через yt-dlp и загружаем в Telegram ---
-    if isinstance(track, YtTrack):
+    # SoundCloud скачиваем через yt-dlp, но поиск YouTube отключён.
+    if getattr(track, "source", None) == "soundcloud":
         await bot.send_chat_action(chat_id, "upload_voice")
-        async with yt_slots:
-            data = await yt.download_track(track.url)
+        data = await soundcloud_downloader.download_track(track.url)
         if not data:
             return await bot.send_message(
                 chat_id,
-                "Не удалось скачать этот трек с YouTube 😔 Попробуйте другой "
-                "(возможно, файл больше 50 МБ или видео недоступно).",
+                "Не удалось скачать этот трек с SoundCloud 😔 Попробуйте другой."
             )
         filename = f"{track.artist} - {track.title}.mp3"
-        await bot.send_audio(chat_id, BufferedInputFile(data, filename=filename), **kwargs)
-        await db.log_event(cb.from_user.id, "download", source="youtube")
+        await bot.send_audio(
+            chat_id, BufferedInputFile(data, filename=filename), **kwargs
+        )
+        await db.log_event(cb.from_user.id, "download", source="soundcloud")
         return
 
-    # --- трек из каталога: как было раньше ---
+    # --- трек из каталога ---
     url = await providers.resolve_url(session, track)
     if not url:
         return await bot.send_message(chat_id, "Не удалось найти аудиофайл для этого трека 😔")
@@ -305,9 +296,10 @@ async def main():
     logging.basicConfig(level=logging.INFO)
     await db.init()
 
-    # Создаём здесь, чтобы лог «прокси/cookies/ffmpeg» попал в настроенный logging
-    yt = YouTubeDownloader()
-    yt_slots = asyncio.Semaphore(YOUTUBE_PARALLEL)
+    # Используется только для скачивания найденных треков SoundCloud.
+    # Поиск YouTube из бота удалён.
+    global soundcloud_downloader
+    soundcloud_downloader = YouTubeDownloader()
 
     bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
@@ -326,7 +318,7 @@ async def main():
     ])
 
     async with aiohttp.ClientSession(headers={"User-Agent": "MusicSearchBot/0.2"}) as session:
-        await dp.start_polling(bot, session=session, yt=yt, yt_slots=yt_slots)
+        await dp.start_polling(bot, session=session)
 
 
 if __name__ == "__main__":
