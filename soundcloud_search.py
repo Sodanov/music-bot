@@ -18,4 +18,12 @@ def _search(query: str, limit: int) -> list[dict]:
     return out
 
 async def search(query: str, limit: int = 20) -> list[dict]:
-    return await asyncio.to_thread(_search, query, limit)
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_search, query, limit),
+            timeout=7,
+        )
+    except asyncio.TimeoutError:
+        return []
+    except Exception:
+        return []

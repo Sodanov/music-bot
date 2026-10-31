@@ -18,7 +18,7 @@ from config import (
 
 log = logging.getLogger(__name__)
 
-TIMEOUT = aiohttp.ClientTimeout(total=20)
+TIMEOUT = aiohttp.ClientTimeout(total=5, connect=3)
 APP_NAME = "MusicSearchBot"  # имя приложения для Audius
 MAX_RESULTS = 40             # всего результатов в выдаче
 
