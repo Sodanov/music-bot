@@ -44,6 +44,15 @@ from admin import router as admin_router
 from config import BOT_TOKEN, PAGE_SIZE, USER_COOLDOWN_SEC
 from youtube_downloader import YouTubeDownloader
 
+async def animate_status(status):
+    dots = ["", ".", "..", "..."]
+    i = 0
+
+    while True:
+        await asyncio.sleep(1)
+        await status.edit_text(f"🔎 Ищу музыку{dots[i]}")
+        i = (i + 1) % len(dots)
+
 log = logging.getLogger(__name__)
 router = Router()
 
@@ -137,19 +146,28 @@ async def do_search(
 
     # Кулдаун включаем только когда запрос принят.
     cooldown[uid] = True
-
-    status = await message.reply("🔎 Ищу…")
+    status = await message.reply("🔎 Ищу музыку...")
     q = query[:100]
     await db.log_event(uid, "search", query=q)
 
-    # SoundCloud и остальные каталоги ищем одновременно.
-    catalog, soundcloud = await asyncio.gather(
-        providers.search_all(session, q),
-        soundcloud_search.search(q, limit=20),
-        return_exceptions=True,
-    )
+    animation = asyncio.create_task(animate_status(status))
+
+    try:
+        # SoundCloud и остальные каталоги ищем одновременно.
+        catalog, soundcloud = await asyncio.gather(
+            providers.search_all(session, q),
+            soundcloud_search.search(q, limit=20),
+            return_exceptions=True,
+        )
+    finally:
+        animation.cancel()
+        try:
+            await animation
+        except asyncio.CancelledError:
+            pass
 
     tracks = []
+
 
     if isinstance(catalog, Exception):
         log.warning("Ошибка поиска в каталогах: %s", catalog)
