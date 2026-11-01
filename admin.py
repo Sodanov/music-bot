@@ -1,5 +1,5 @@
 import html
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -205,7 +205,7 @@ async def stats_text() -> str:
 
 
 def _format_ts(ts: int) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+    return datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=3))).strftime("%d.%m.%Y %H:%M UTC+3")
 
 
 def users_keyboard(offset: int, total: int, search: str | None = None) -> InlineKeyboardMarkup:
