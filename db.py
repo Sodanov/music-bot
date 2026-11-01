@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS events (
     query TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_kind_ts ON events (kind, ts);
+CREATE INDEX IF NOT EXISTS idx_users_first_seen ON users (first_seen DESC);
+CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users (last_seen DESC);
 """
 
 AD_FIELDS = {"text", "button_text", "url", "enabled"}
@@ -159,6 +161,65 @@ async def log_event(
         log.exception("stats: не удалось записать событие %s", kind)
 
 
+
+async def count_users(search: str | None = None) -> int:
+    """Количество пользователей, при необходимости — по username или Telegram ID."""
+    async with _pool_or_raise().acquire() as conn:
+        if not search:
+            return await conn.fetchval("SELECT COUNT(*) FROM users")
+        term = search.strip().lstrip("@")
+        if term.isdigit():
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM users WHERE user_id = $1", int(term)
+            )
+        return await conn.fetchval(
+            "SELECT COUNT(*) FROM users WHERE username ILIKE $1",
+            f"%{term}%",
+        )
+
+
+async def list_users(
+    offset: int = 0, limit: int = 10, search: str | None = None
+) -> list[dict]:
+    """Пользователи для админского списка; загружается только одна страница."""
+    offset = max(0, offset)
+    limit = min(max(1, limit), 25)
+    async with _pool_or_raise().acquire() as conn:
+        if not search:
+            rows = await conn.fetch(
+                """
+                SELECT user_id, username, first_name, first_seen, last_seen
+                FROM users
+                ORDER BY first_seen DESC, user_id DESC
+                LIMIT $1 OFFSET $2
+                """,
+                limit, offset,
+            )
+        else:
+            term = search.strip().lstrip("@")
+            if term.isdigit():
+                rows = await conn.fetch(
+                    """
+                    SELECT user_id, username, first_name, first_seen, last_seen
+                    FROM users WHERE user_id = $1
+                    ORDER BY first_seen DESC LIMIT $2 OFFSET $3
+                    """,
+                    int(term), limit, offset,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT user_id, username, first_name, first_seen, last_seen
+                    FROM users WHERE username ILIKE $1
+                    ORDER BY first_seen DESC, user_id DESC
+                    LIMIT $2 OFFSET $3
+                    """,
+                    f"%{term}%", limit, offset,
+                )
+    return [dict(row) for row in rows]
+
+
+
 async def get_stats() -> dict:
     now = int(time.time())
     day, week = now - 86400, now - 7 * 86400
@@ -215,4 +276,18 @@ async def get_stats() -> dict:
             week,
         )
         stats["top_queries"] = [(row["query"], row["c"]) for row in rows]
+
+        # Кампании: считаем уникальных пользователей, пришедших по /start <метка>.
+        rows = await conn.fetch(
+            """
+            SELECT source AS campaign, COUNT(DISTINCT user_id) AS users,
+                   COUNT(*) AS starts, MAX(ts) AS last_seen
+            FROM events
+            WHERE kind = 'start' AND source IS NOT NULL AND source <> 'direct'
+            GROUP BY source
+            ORDER BY users DESC, starts DESC, last_seen DESC
+            LIMIT 10
+            """
+        )
+        stats["campaigns"] = [dict(row) for row in rows]
     return stats

@@ -216,7 +216,12 @@ async def do_search(
 # ---------- команды и сообщения ----------
 
 @router.message(Command("start", "help"))
-async def start(m: Message):
+async def start(m: Message, command: CommandObject):
+    # Telegram deep links pass a campaign label as: /start ads_telegram
+    if command.command == "start":
+        payload = (command.args or "").strip()
+        campaign = payload[:64] if payload else "direct"
+        await db.log_event(m.from_user.id, "start", source=campaign)
     await m.answer(
         "🎵 <b>Музыкальный бот</b>\n\n"
         "В личных сообщениях просто напишите название трека или исполнителя.\n"
